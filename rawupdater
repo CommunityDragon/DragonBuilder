@@ -61,7 +61,7 @@ class Updater:
         self.export = os.path.join(base, "export")
 
     def last_versions_path(self):
-        return f"last-versions.{self.cdn}.txt"
+        return os.path.join(self.base, f"last-versions.{self.cdn}.txt")
 
     def get_last_versions(self):
         """Return a map of solution versions used for the last updated"""
