@@ -203,6 +203,9 @@ class Updater:
         exporter.write_links()
         exporter.write_unknown()
         exporter.create_symlinks()
+        with open(f"{exporter.output}.filelist.txt", 'w', newline='\n') as f:
+            for p in exporter.all_exported_paths():
+                print(p, file=f)
 
     def clean_storage_files(self, patch):
         """Keep only the latest version of files"""
