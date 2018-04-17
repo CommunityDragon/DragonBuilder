@@ -95,8 +95,15 @@ class Updater:
         versions = self.get_last_versions()
         last_version = versions.get(sv.solution.name)
         if last_version is None or last_version < sv.version:
-            logger.info(f"found new version: {sv}")
-            return PatchVersion.version(self.storage, stored=False)
+            patch = PatchVersion.version(self.storage, stored=False)
+            # If the solution is announced but not available yet, it is not
+            # part of the latest patch. In this case, don't update yet.
+            for patch_sv in patch.solutions():
+                if patch_sv == sv:
+                    logger.info(f"found new version: {sv}")
+                    return patch
+            else:
+                logger.info(f"found new version, but not available yet: {sv}")
         return None
 
     def fetch_patch(self, patch):
