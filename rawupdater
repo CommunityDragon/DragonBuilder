@@ -186,6 +186,20 @@ class Updater:
                 exporter = updater.patch_exporter_from_patch(patch)
                 updater.export_if_new_hashes(exporter, new_hashes)
 
+    @classmethod
+    def update_all_exports(cls, base):
+        """Update all exports, forcily"""
+
+        updater = cls(base, 'default')
+        for exporter in Exporter(updater.storage, updater.export).exporters[::-1]:
+            updater.update_patch_exporter(exporter)
+
+        updater = cls(base, 'pbe')
+        if os.path.exists(updater.export):
+            patch = PatchVersion.version(updater.storage, 'main')
+            exporter = updater.patch_exporter_from_patch(patch)
+            updater.update_patch_exporter(exporter)
+
     def patch_exporter_from_patch(self, patch):
         """Return a PatchExporter for a given patch"""
 
@@ -332,6 +346,10 @@ def command_new_patch(parser, args):
         discord_notify(args.webhook, f"raw.communitydragon.org has been updated with {str_patch}")
 
 
+def command_update_all(parser, args):
+    Updater.update_all_exports(args.basedir)
+
+
 def command_git_update(parser, args):
     new_hashes = git_pull_hashes()
     if not new_hashes:
@@ -365,6 +383,9 @@ def main():
                                       help="check for new patch and export it")
     subparser.add_argument('--cdn', choices=['default', 'pbe'], default='default',
                            help="use a different CDN")
+
+    subparser = subparsers.add_parser('update-all',
+                                      help="update all exports, for new hashes")
 
     subparser = subparsers.add_parser('git-update',
                                       help="update Git repository, update exports on new hashes")
