@@ -175,7 +175,7 @@ class Updater:
         """Update all exports for new hashes"""
 
         updater = cls(base, 'default')
-        for exporter in Exporter(updater.storage, updater.export).exporters:
+        for exporter in Exporter(updater.storage, updater.export).exporters[::-1]:
             updater.export_if_new_hashes(exporter, new_hashes)
 
         if pbe:
