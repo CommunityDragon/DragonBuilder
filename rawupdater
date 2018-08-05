@@ -171,11 +171,11 @@ class Updater:
         self.update_patch_exporter(exporter)
 
     @classmethod
-    def update_exports_for_new_hashes(cls, base, new_hashes, pbe=True):
+    def update_exports_for_new_hashes(cls, base, new_hashes, first=None, pbe=True):
         """Update all exports for new hashes"""
 
         updater = cls(base, 'default')
-        for exporter in Exporter(updater.storage, updater.export).exporters[::-1]:
+        for exporter in Exporter(updater.storage, updater.export, first=first).exporters[::-1]:
             updater.export_if_new_hashes(exporter, new_hashes)
 
         if pbe:
@@ -187,11 +187,11 @@ class Updater:
                 updater.export_if_new_hashes(exporter, new_hashes)
 
     @classmethod
-    def update_all_exports(cls, base):
+    def update_all_exports(cls, base, first=None):
         """Update all exports, forcily"""
 
         updater = cls(base, 'default')
-        for exporter in Exporter(updater.storage, updater.export).exporters[::-1]:
+        for exporter in Exporter(updater.storage, updater.export, first=first).exporters[::-1]:
             updater.update_patch_exporter(exporter)
 
         updater = cls(base, 'pbe')
@@ -325,7 +325,7 @@ def command_new_patch(parser, args):
         return  # nothing to update
 
     new_hashes = updater.fetch_patch(patch)
-    updater.update_exports_for_new_hashes(args.basedir, new_hashes, pbe=updater.cdn != 'pbe')
+    updater.update_exports_for_new_hashes(args.basedir, new_hashes, first=Version(args.first), pbe=updater.cdn != 'pbe')
     updater.export_new_patch(patch)
 
     # commit changes to hashes.txt
@@ -347,14 +347,14 @@ def command_new_patch(parser, args):
 
 
 def command_update_all(parser, args):
-    Updater.update_all_exports(args.basedir)
+    Updater.update_all_exports(args.basedir, first=Version(args.first))
 
 
 def command_git_update(parser, args):
     new_hashes = git_pull_hashes()
     if not new_hashes:
         return
-    Updater.update_exports_for_new_hashes(args.basedir, new_hashes)
+    Updater.update_exports_for_new_hashes(args.basedir, new_hashes, first=Version(args.first))
 
     if args.webhook:
         if len(new_hashes) == 1:
@@ -374,6 +374,8 @@ def main():
                         help="be verbose")
     parser.add_argument('-b', '--basedir', metavar='DIR',
                         help="base directory for all files (storage, export, ...)")
+    parser.add_argument('--first', metavar='PATCH',
+                        help="first patch version to export")
     parser.add_argument('--webhook', default=default_discord_webhook, metavar='URL',
                         help="Discord webhook URL for update notifications")
 
