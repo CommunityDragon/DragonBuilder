@@ -89,21 +89,22 @@ class Updater:
     def get_new_patch(self):
         """Check if a new patch is available and return it"""
 
-        solution = Solution(self.storage, 'league_client_sln')
-        sv = solution.versions()[0]
-
         versions = self.get_last_versions()
-        last_version = versions.get(sv.solution.name)
-        if last_version is None or last_version < sv.version:
-            patch = PatchVersion.version(self.storage, stored=False)
-            # If the solution is announced but not available yet, it is not
-            # part of the latest patch. In this case, don't update yet.
-            for patch_sv in patch.solutions():
-                if patch_sv == sv:
-                    logger.info(f"found new version: {sv}")
-                    return patch
-            else:
-                logger.info(f"found new version, but not available yet: {sv}")
+        for solution_name in ('league_client_sln', 'lol_game_client_sln'):
+            solution = Solution(self.storage, solution_name)
+            sv = solution.versions()[0]
+            last_version = versions.get(solution_name)
+
+            if last_version is None or last_version < sv.version:
+                patch = PatchVersion.version(self.storage, stored=False)
+                # If the solution is announced but not available yet, it is not
+                # part of the latest patch. In this case, don't update yet.
+                for patch_sv in patch.solutions():
+                    if patch_sv == sv:
+                        logger.info(f"found new version: {sv}")
+                        return patch
+                else:
+                    logger.info(f"found new version, but not available yet: {sv}")
         return None
 
     def fetch_patch(self, patch):
@@ -112,14 +113,15 @@ class Updater:
         logger.info(f"fetch new patch: {patch.version}")
 
         # download files
-        solutions = [sv for sv in patch.solutions(latest=True) if sv.solution.name == 'league_client_sln']
+        solutions = [sv for sv in patch.solutions(latest=True)]
         for sv in solutions:
             sv.download(langs=True)
 
         # collect wads and hashes
+        lcu_projects = [pv for sv in solutions for pv in sv.projects(langs=True) if sv.solution.name == 'league_client_sln']
         hashes = hashfile_lcu
         known_hashes = hashes.load()
-        wads = [path for sv in solutions for pv in sv.projects(langs=True) for path in pv.filepaths() if path.endswith('.wad')]
+        wads = [path for pv in lcu_projects for path in pv.filepaths() if path.endswith('.wad')]
         wads = [Wad(patch.storage.fspath(path)) for path in wads]
         unknown_hashes = set()
         for wad in wads:
@@ -235,7 +237,7 @@ class Updater:
         if self.cdn != 'pbe':
             return  # only clean PBE
 
-        solutions = [sv for sv in patch.solutions(latest=True) if sv.solution.name == 'league_client_sln']
+        solutions = [sv for sv in patch.solutions(latest=True)]
 
         # normalize paths to avoid / vs. \ mix on Windows
         storage_root = os.path.normpath(self.storage.path)
