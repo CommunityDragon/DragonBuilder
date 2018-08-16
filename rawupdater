@@ -31,11 +31,17 @@ from cdragontoolbox.storage import (
 )
 from cdragontoolbox.wad import (
     Wad,
-    hashfile_lcu,
+    wads_from_component,
 )
 from cdragontoolbox.export import (
     Exporter,
     PatchExporter,
+)
+from cdragontoolbox.hashes import (
+    hashfile_lcu,
+    hashfile_game,
+    LcuHashGuesser,
+    GameHashGuesser,
 )
 
 
@@ -117,31 +123,41 @@ class Updater:
         for sv in solutions:
             sv.download(langs=True)
 
-        # collect wads and hashes
-        lcu_projects = [pv for sv in solutions for pv in sv.projects(langs=True) if sv.solution.name == 'league_client_sln']
-        hashes = hashfile_lcu
-        known_hashes = hashes.load()
-        wads = [path for pv in lcu_projects for path in pv.filepaths() if path.endswith('.wad')]
-        wads = [Wad(patch.storage.fspath(path)) for path in wads]
-        unknown_hashes = set()
-        for wad in wads:
-            unknown_hashes |= set(wadfile.path_hash for wadfile in wad.files)
-        unknown_hashes -= set(known_hashes)
+        # collect wads, and currently known hashes
+        wads = wads_from_component(sv)
+        old_hashes = set(hashfile_lcu.load()) | set(hashfile_game.load())
 
-        # guess hashes from new wads
-        new_hashes = {}
-        for wad in wads:
-            wad.guess_extensions()
-            new_hashes.update(wad.guess_hashes(unknown_hashes))
-        new_hashes.update(Wad.guess_hashes_from_known(known_hashes, unknown_hashes))
+        # guess LCU hashes
+        guesser = LcuHashGuesser.from_wads(wads)
+        if guesser.unknown:
+            nunknown = len(guesser.unknown)
+            for wad in guesser.wads:
+                wad.guess_extensions()
+                guesser.grep_wad(wad)
+            guesser.substitute_numbers()
+            guesser.substitute_extensions()
 
-        logger.info(f"new hashes found: {len(new_hashes)}")
+            nfound = nunknown - len(guesser.unknown)
+            logger.info(f"new LCU hashes found: {nfound}")
+            if nfound:
+                guesser.save()
 
-        if new_hashes:
-            known_hashes.update(new_hashes)  # update in place
-            hashes.save()
+        # guess game hashes
+        guesser = GameHashGuesser.from_wads(wads)
+        if guesser.unknown:
+            nunknown = len(guesser.unknown)
+            for wad in guesser.wads:
+                wad.guess_extensions()
+                guesser.grep_wad(wad)
+            guesser.substitute_numbers()
+            guesser.substitute_extensions()
 
-        return set(new_hashes)
+            nfound = nunknown - len(guesser.unknown)
+            logger.info(f"new game hashes found: {nfound}")
+            if nfound:
+                guesser.save()
+
+        return old_hashes - (set(hashfile_lcu.load()) | set(hashfile_game.load()))
 
     def export_new_patch(self, patch):
         """Export a (new) patch"""
@@ -273,6 +289,7 @@ def git_commit_hashes(message):
         logging.warning("cdtb repo index is not clean, won't commit hashes")
         return
     repo.index.add(['cdragontoolbox/hashes.lcu.txt'])
+    repo.index.add(['cdragontoolbox/hashes.game.txt'])
     if not repo.index.diff(repo.head.commit):
         return  # no changes
 
@@ -302,17 +319,12 @@ def git_pull_hashes():
         raise RuntimeError("local HEAD (master) is not an ancestor of origin branch")
 
     # get new hashes, if any
-    diff = tip_local.diff(tip_remote, paths='cdragontoolbox/hashes.lcu.txt')
-    if diff:
-        diff = diff[0]
-    else:
-        diff = None
-    if diff is not None:
+    diff_index = tip_local.diff(tip_remote, paths=['cdragontoolbox/hashes.lcu.txt', 'cdragontoolbox/hashes.game.txt'])
+    new_hashes = set()
+    for diff in diff_index:
         hashes_old = {int(h.split()[0], 16) for h in diff.a_blob.data_stream.read().splitlines()}
         hashes_new = {int(h.split()[0], 16) for h in diff.b_blob.data_stream.read().splitlines()}
-        new_hashes = hashes_new - hashes_old
-    else:
-        new_hashes = set()
+        new_hashes |= hashes_new - hashes_old
 
     # update local HEAD, use pull() to detect any error
     origin.pull('master', ff_only=True)
