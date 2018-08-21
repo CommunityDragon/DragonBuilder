@@ -157,7 +157,7 @@ class Updater:
             if nfound:
                 guesser.save()
 
-        return old_hashes - (set(hashfile_lcu.load()) | set(hashfile_game.load()))
+        return (set(hashfile_lcu.load()) | set(hashfile_game.load())) - old_hashes
 
     def export_new_patch(self, patch):
         """Export a (new) patch"""
