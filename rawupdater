@@ -118,13 +118,14 @@ class Updater:
 
         logger.info(f"fetch new patch: {patch.version}")
 
-        # download files
+        # download files, collect wads
         solutions = [sv for sv in patch.solutions(latest=True)]
+        wads = []
         for sv in solutions:
             sv.download(langs=True)
+            wads += wads_from_component(sv)
 
         # collect wads, and currently known hashes
-        wads = wads_from_component(sv)
         old_hashes = set(hashfile_lcu.load()) | set(hashfile_game.load())
 
         # guess LCU hashes
