@@ -165,7 +165,7 @@ class Updater:
 
         logger.info(f"export new patch: {patch.version}")
         patch_exporter = self.patch_exporter_from_patch(patch)
-        self.update_patch_exporter(patch_exporter)
+        self.update_patch_exporter(patch_exporter, True)
 
         # update the "latest" link if it exists (atomically)
         if self.cdn == 'default':
@@ -187,7 +187,7 @@ class Updater:
             if not unknown & new_hashes:
                 return
         logger.debug(f"update exported patch for new hashes: {exporter.patch.version}")
-        self.update_patch_exporter(exporter)
+        self.update_patch_exporter(exporter, False)
 
     @classmethod
     def update_exports_for_new_hashes(cls, base, new_hashes, first=None, pbe=True):
@@ -210,14 +210,17 @@ class Updater:
         """Update all exports, forcily"""
 
         updater = cls(base, 'default')
-        for exporter in Exporter(updater.storage, updater.export, first=first).exporters[::-1]:
-            updater.update_patch_exporter(exporter)
+        # only the newer patch can be updated, don't overwrite files of previous ones
+        exporters = Exporter(updater.storage, updater.export, first=first).exporters[::-1]
+        for exporter in exporters[:-1]:
+            updater.update_patch_exporter(exporter, False)
+        updater.update_patch_exporter(exporters[-1], True)
 
         updater = cls(base, 'pbe')
         if os.path.exists(updater.export):
             patch = PatchVersion.version(updater.storage, 'main')
             exporter = updater.patch_exporter_from_patch(patch)
-            updater.update_patch_exporter(exporter)
+            updater.update_patch_exporter(exporter, True)
 
     def patch_exporter_from_patch(self, patch):
         """Return a PatchExporter for a given patch"""
@@ -237,10 +240,10 @@ class Updater:
                 raise ValueError(f"cannot guess previous patch for {patch}")
         return PatchExporter(os.path.join(self.export, basename), patch, previous_patch)
 
-    def update_patch_exporter(self, exporter):
+    def update_patch_exporter(self, exporter, overwrite):
         """Update a single patch exporter"""
 
-        exporter.export()
+        exporter.export(overwrite)
         exporter.write_links()
         exporter.write_unknown()
         exporter.create_symlinks()
