@@ -28,14 +28,14 @@ from cdragontoolbox.storage import (
     Version,
     PatchVersion,
     Solution,
+    SolutionVersion,
 )
 from cdragontoolbox.wad import (
     Wad,
     wads_from_component,
 )
 from cdragontoolbox.export import (
-    Exporter,
-    PatchExporter,
+    CdragonRawPatchExporter,
 )
 from cdragontoolbox.hashes import (
     hashfile_lcu,
@@ -165,7 +165,16 @@ class Updater:
 
         logger.info(f"export new patch: {patch.version}")
         patch_exporter = self.patch_exporter_from_patch(patch)
-        self.update_patch_exporter(patch_exporter, True)
+        if self.cdn:
+            # Create a previous patch with lastly exported solutions.
+            # This dramatically reduces export time for new patch
+            prev_solutions = []
+            for name, version in self.get_last_versions().items():
+                sv = SolutionVersion(Solution(patch.storage, name), version)
+                prev_solutions.append(sv)
+            # note: symlinks is already forced to False
+            patch_exporter.prev_patch = PatchVersion._create(patch.storage, patch.version, prev_solutions)
+        patch_exporter.process(overwrite=True)
 
         # update the "latest" link if it exists (atomically)
         if self.cdn == 'default':
@@ -187,14 +196,15 @@ class Updater:
             if not unknown & new_hashes:
                 return
         logger.debug(f"update exported patch for new hashes: {exporter.patch.version}")
-        self.update_patch_exporter(exporter, False)
+        exporter.process(overwrite=False)
 
     @classmethod
     def update_exports_for_new_hashes(cls, base, new_hashes, first=None, pbe=True):
         """Update all exports for new hashes"""
 
         updater = cls(base, 'default')
-        for exporter in Exporter(updater.storage, updater.export, first=first).exporters[::-1]:
+        exporters = CdragonRawPatchExporter.from_directory(updater.storage, updater.export, first=first)
+        for exporter in exporters:
             updater.export_if_new_hashes(exporter, new_hashes)
 
         if pbe:
@@ -206,21 +216,36 @@ class Updater:
                 updater.export_if_new_hashes(exporter, new_hashes)
 
     @classmethod
-    def update_all_exports(cls, base, first=None):
-        """Update all exports, forcily"""
+    def update_exports(cls, base, patches, first=None, overwrite=False):
+        """Update exports, forcily"""
+
+        all_exporters = []  # exporter
 
         updater = cls(base, 'default')
-        # only the newer patch can be updated, don't overwrite files of previous ones
-        exporters = Exporter(updater.storage, updater.export, first=first).exporters[::-1]
+        exporters = CdragonRawPatchExporter.from_directory(updater.storage, updater.export, first=first)
         for exporter in exporters[:-1]:
-            updater.update_patch_exporter(exporter, False)
-        updater.update_patch_exporter(exporters[-1], True)
+            all_exporters.append(exporter)
+        all_exporters.append(exporters[-1])
 
         updater = cls(base, 'pbe')
         if os.path.exists(updater.export):
             patch = PatchVersion.version(updater.storage, 'main')
             exporter = updater.patch_exporter_from_patch(patch)
-            updater.update_patch_exporter(exporter, True)
+            all_exporters.append(exporter)
+
+        if patches is None:
+            # export everything
+            for exporter in all_exporters:
+                exporter.process(overwrite)
+        else:
+            # index by version string
+            exporters_by_version = {e.patch.version: e for e in all_exporters}
+            # check requested versions before starting the process
+            missing_versions = set(patches) - set(exporters_by_version)
+            if missing_versions:
+                raise ValueError(f"versions not found: {', '.join(sorted(missing_versions))}")
+            for version in patches:
+                exporters_by_version[version].process(overwrite=overwrite)
 
     def patch_exporter_from_patch(self, patch):
         """Return a PatchExporter for a given patch"""
@@ -228,6 +253,7 @@ class Updater:
         if self.cdn == 'pbe':
             basename = 'pbe'
             previous_patch = None
+            symlinks = False
         else:
             basename = str(patch.version)
             # retrieve previous patch version
@@ -238,18 +264,8 @@ class Updater:
                     break
             else:
                 raise ValueError(f"cannot guess previous patch for {patch}")
-        return PatchExporter(os.path.join(self.export, basename), patch, previous_patch)
-
-    def update_patch_exporter(self, exporter, overwrite):
-        """Update a single patch exporter"""
-
-        exporter.export(overwrite)
-        exporter.write_links()
-        exporter.write_unknown()
-        exporter.create_symlinks()
-        with open(f"{exporter.output}.filelist.txt", 'w', newline='\n') as f:
-            for p in exporter.all_exported_paths():
-                print(p, file=f)
+            symlinks = None
+        return CdragonRawPatchExporter(os.path.join(self.export, basename), patch, previous_patch, symlinks)
 
     def clean_storage_files(self, patch):
         """Keep only the latest version of files"""
@@ -364,8 +380,13 @@ def command_new_patch(parser, args):
         discord_notify(args.webhook, f"raw.communitydragon.org has been updated with {str_patch}")
 
 
-def command_update_all(parser, args):
-    Updater.update_all_exports(args.basedir, first=args.first)
+def command_update(parser, args):
+    if args.patches:
+        patches = ['main' if p == 'pbe' else p for p in args.patches]
+    else:
+        patches = None
+
+    Updater.update_exports(args.basedir, patches, first=args.first, overwrite=args.force)
 
 
 def command_git_update(parser, args):
@@ -404,8 +425,12 @@ def main():
     subparser.add_argument('--cdn', choices=['default', 'pbe'], default='default',
                            help="use a different CDN")
 
-    subparser = subparsers.add_parser('update-all',
-                                      help="update all exports, for new hashes")
+    subparser = subparsers.add_parser('update',
+                                      help="update given exports, for instance for new hashes")
+    subparser.add_argument('-f', '--force', action='store_true', default=False,
+                           help="Forcily overwrite files")
+    subparser.add_argument('patches', nargs='*',
+                           help="patches to export, none to update all, 'pbe' for PBE")
 
     subparser = subparsers.add_parser('git-update',
                                       help="update Git repository, update exports on new hashes")
