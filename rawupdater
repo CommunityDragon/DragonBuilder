@@ -165,7 +165,7 @@ class Updater:
 
         logger.info(f"export new patch: {patch.version}")
         patch_exporter = self.patch_exporter_from_patch(patch)
-        if self.cdn:
+        if self.cdn == 'pbe':
             # Create a previous patch with lastly exported solutions.
             # This dramatically reduces export time for new patch
             prev_solutions = []
