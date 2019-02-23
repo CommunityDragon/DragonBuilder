@@ -3,36 +3,55 @@
 
 Update files of raw.communitydragon.org
 
-The base directory is provided by the --basedir option.
-Under this directory, the following structure is used:
+The update is configured using a JSON file with the following entries.
+All paths are relative to the configuration file's directory.
 
-    RADS/                       storage
-    RADS.pbe/                   storage (PBE)
-    export/<version>/           exported files for a patch version
-    export/pbe/                 exported PBE files
-    export/latest               symlink to last patch
-    last-versions.default.txt   solution versions of the last update
-    last-versions.pbe.txt       solution versions of the last PBE update
-    update.lock                 lock file to prevent concurrent updates
+    base_path -- base path for various files (default: `.`)
+    export_path -- output directory for exported files (default: `export`)
+    storage_paths -- storage paths to use, indexed by patch version(s)
+      The following keys are supported:
+        pbe -- storage for PBE export
+        X.Y -- storage for patch X.Y
+        X.Y-A.B -- storage for patches X.Y to A.B inclusive
+        X.Y- -- storage for patches X.Y and after
+      If `pbe` key is not defined, PBE support is disabled.
+      Exactly one `X.Y-` must be defined.
+      Values are paths suitable for `Storage.from_path()`.
+    guess_hashes -- if true, guess hashes on new patch
+
+The following files are used (expecting default path configuration):
+
+    export/<version>/        exported files for a patch version
+    export/pbe/              exported PBE files
+    export/latest            symlink to last patch
+    last-versions.live.txt   release versions of the last update
+    last-versions.pbe.txt    release versions of the last PBE update
+    update.lock              lock file to prevent concurrent updates
+
+Two branches are defined for automatic updates: `pbe` and `live`.
 
 """
 import os
-from contextlib import contextmanager
+import re
+import json
+import shutil
 import logging
+from typing import Optional
 import git
 import requests
 import filelock
 import cdragontoolbox
 from cdragontoolbox.storage import (
     Storage,
-    Version,
+    Patch,
     PatchVersion,
-    Solution,
-    SolutionVersion,
+)
+from cdragontoolbox.patcher import (
+    PatcherPatchElement,
+    PatcherRelease,
 )
 from cdragontoolbox.wad import (
     Wad,
-    wads_from_component,
 )
 from cdragontoolbox.export import (
     CdragonRawPatchExporter,
@@ -48,31 +67,123 @@ from cdragontoolbox.hashes import (
 logger = logging.getLogger("rawupdater")
 
 
-def discord_notify(url, message):
-    """Send a message to Discord"""
-    r = requests.post(url, json={'content': message})
-    r.raise_for_status()
-
-
 class Updater:
     """
     Update raw storage files
     """
 
-    def __init__(self, base, cdn):
-        self.base = base
-        self.cdn = cdn
-        storage_path = "RADS" if cdn == 'default' else f"RADS.{cdn}"
-        self.storage = Storage(os.path.join(base, storage_path), getattr(Storage, f"URL_{cdn}".upper()))
-        self.export = os.path.join(base, "export")
+    def __init__(self, conf_path):
+        with open(conf_path) as f:
+            conf = json.load(f)
 
-    def last_versions_path(self):
-        return os.path.join(self.base, f"last-versions.{self.cdn}.txt")
+        conf_dir = os.path.dirname(conf_path)
+        self.base = os.path.normpath(os.path.join(conf_dir, conf.get('base_path', '.')))
+        self.export = os.path.join(self.base, conf.get('export_path', "export"))
+        self.guess_hashes = bool(conf.get('guess_hashes', True))
 
-    def get_last_versions(self):
-        """Return a map of solution versions used for the last updated"""
+        # parse storages configuration
+        self.storage_path_pbe = None
+        self.storage_path_live = None
+        self.storage_paths = []  # [(v0, v1|None, path)]
+        for key, path in conf['storage_paths'].items():
+            path = os.path.normpath(os.path.join(conf_dir, path))
+            if key == 'pbe':
+                self.storage_path_pbe = path
+            else:
+                m = re.match(r'^(\d+\.\d+)-(\d+\.\d+)?$', key)
+                if not m:
+                    raise ValueError(f"invalid storages key: {key!r}")
+                v0, v1 = m.groups()
+                if v1:
+                    self.storage_paths.append((PatchVersion(v0), PatchVersion(v1), path))
+                elif self.storage_path_live is not None:
+                    raise ValueError("duplicate storage path for live patch")
+                else:
+                    self.storage_paths.append((PatchVersion(v0), None, path))
+                    self.storage_path_live = path
+        self._storages = {}  # {"pbe"|"live"|PatchVersion: Storage}
 
-        path = self.last_versions_path()
+    def lock(self):
+        """Acquire lock to avoid parallel changes"""
+        return filelock.FileLock(os.path.join(self.base, "update.lock"))
+
+    def storage_for_version(self, version: PatchVersion) -> Optional[Storage]:
+        """Return a storage for a given version, if available"""
+
+        if version == 'main':
+            version = 'pbe'
+
+        if version in self._storages:
+            return self._storages[version]
+
+        if version == 'pbe':
+            storage_path = self.storage_path_pbe
+        else:
+            for v0, v1, path in self.storage_paths:
+                if v0 <= version and (v1 is None or version < v1):
+                    storage_path = path
+                    break
+            else:
+                storage_path = None
+
+        if storage_path is None:
+            storage = None
+        else:
+            storage = Storage.from_path(storage_path)
+        self._storages[version] = storage
+        return storage
+
+    def storage_for_branch(self, branch) -> Storage:
+        """Return a storage for a branch, fail if not available"""
+
+        if branch in self._storages:
+            return self._storages[branch]
+
+        if branch == 'pbe':
+            storage_path = self.storage_path_pbe
+        elif branch == 'live':
+            storage_path = self.storage_path_live
+
+        if storage_path is None:
+            raise ValueError(f"no storage configured for branch '{branch}'")
+
+        storage = Storage.from_path(storage_path)
+        self._storages[branch] = storage
+        return storage
+
+    def exported_versions(self):
+        """Return a list of PatchVersion of exported patches
+
+        Versions are sorted, PBE and versions without a configured storage are
+        excluded.
+        """
+
+        versions = []
+        for path in os.listdir(self.export):
+            if path in ('latest', 'pbe'):
+                continue
+            if not os.path.isdir(os.path.join(self.export, path)):
+                continue
+            try:
+                version = PatchVersion(path)
+            except (ValueError, TypeError):
+                continue
+            if self.storage_for_version(version) is None:
+                continue
+            versions.append(version)
+
+        return sorted(versions)
+
+    def first_version(self):
+        return min(v0 for v0, _, _ in self.storage_paths)
+
+    def last_versions_path(self, branch):
+        return os.path.join(self.base, f"last-versions.{branch}.txt")
+
+    def get_last_versions(self, branch):
+        """Return a `{channel: version}` map of versions used for the last update"""
+
+        path = self.last_versions_path(branch)
         if not os.path.exists(path):
             return {}
         versions = {}
@@ -80,56 +191,73 @@ class Updater:
             for line in f:
                 if not line:
                     continue
-                name, version = line.strip().split('=')
-                versions[name] = Version(version)
+                channel, version = line.strip().split('=')
+                versions[channel] = int(version)
         return versions
 
-    def save_last_versions(self, patch):
-        """Update solution last versions from patch"""
+    def save_last_versions(self, branch, patch):
+        """Update last versions from patch"""
 
-        path = self.last_versions_path()
+        path = self.last_versions_path(branch)
         with open(path, 'w') as f:
-            for sv in patch.solutions(latest=True):
-                f.write(f"{sv.solution.name}={sv.version}\n")
+            for channel, version in sorted(self.get_release_versions_for_patch(patch).items()):
+                f.write(f"{channel}={version}\n")
 
-    def get_new_patch(self):
+    def get_release_versions_for_patch(self, patch):
+        """Return `{channel: version}` map from a patch"""
+        storage = self.storage_for_version(patch.version)
+        if storage.storage_type == 'patcher':
+            releases = [e.elem.release for e in patch.elements]
+        elif storage.storage_type == 'multipatcher':
+            releases = [e2.release for e in patch.elements for e2 in e.elements]
+        else:
+            raise TypeError(f"unsupported storage type: {storage.storage_type}")
+        return {r.storage.channel: r.version for r in releases}
+
+    def get_new_patch(self, branch):
         """Check if a new patch is available and return it"""
 
-        versions = self.get_last_versions()
-        for solution_name in ('league_client_sln', 'lol_game_client_sln'):
-            solution = Solution(self.storage, solution_name)
-            sv = solution.versions()[0]
-            last_version = versions.get(solution_name)
+        last = self.get_last_versions(branch)
+        storage = self.storage_for_branch(branch)
+        patch = storage.patch(stored=False)
+        # add the new patch version to storage if needed
+        self._storages[patch.version] = storage
 
-            if last_version is None or last_version < sv.version:
-                patch = PatchVersion.version(self.storage, stored=False)
-                # If the solution is announced but not available yet, it is not
-                # part of the latest patch. In this case, don't update yet.
-                for patch_sv in patch.solutions():
-                    if patch_sv == sv:
-                        logger.info(f"found new version: {sv}")
-                        return patch
-                else:
-                    logger.info(f"found new version, but not available yet: {sv}")
+        new = self.get_release_versions_for_patch(patch)
+        if any(v > last.get(ch, 0) for ch, v in new.items()):
+            return patch
         return None
 
     def fetch_patch(self, patch):
-        """Download a patch, guess new hashes"""
+        """Download a patch, guess new hashes if needed and return them"""
 
         logger.info(f"fetch new patch: {patch.version}")
+        patch.download(langs=True)
 
-        # download files, collect wads
-        solutions = [sv for sv in patch.solutions(latest=True)]
-        wads = []
-        for sv in solutions:
-            sv.download(langs=True)
-            wads += wads_from_component(sv)
+        if not self.guess_hashes:
+            return set()
+
+        logger.info(f"guess new hashes from new patch: {patch.version}")
+
+        for elem in patch.elements:
+            if elem.name == 'client':
+                lcu_wads = [Wad(p) for p in elem.fspaths() if p.endswith('.wad')]
+                break
+        else:
+            raise ValueError("'client' patch element not found")
+
+        for elem in patch.elements:
+            if elem.name == 'game':
+                game_wads = [Wad(p) for p in elem.fspaths() if p.endswith('.wad.client')]
+                break
+        else:
+            raise ValueError("'game' patch element not found")
 
         # collect wads, and currently known hashes
         old_hashes = set(hashfile_lcu.load()) | set(hashfile_game.load())
 
         # guess LCU hashes
-        guesser = LcuHashGuesser.from_wads(wads)
+        guesser = LcuHashGuesser.from_wads(lcu_wads)
         if guesser.unknown:
             nunknown = len(guesser.unknown)
             for wad in guesser.wads:
@@ -144,7 +272,7 @@ class Updater:
                 guesser.save()
 
         # guess game hashes
-        guesser = GameHashGuesser.from_wads(wads)
+        guesser = GameHashGuesser.from_wads(game_wads)
         if guesser.unknown:
             nunknown = len(guesser.unknown)
             for wad in guesser.wads:
@@ -164,20 +292,25 @@ class Updater:
         """Export a (new) patch"""
 
         logger.info(f"export new patch: {patch.version}")
+        is_pbe = patch.version == 'main'
         patch_exporter = self.patch_exporter_from_patch(patch)
-        if self.cdn == 'pbe':
-            # Create a previous patch with lastly exported solutions.
+        if is_pbe:
+            # Create a previous patch with lastly exported files
             # This dramatically reduces export time for new patch
-            prev_solutions = []
-            for name, version in self.get_last_versions().items():
-                sv = SolutionVersion(Solution(patch.storage, name), version)
-                prev_solutions.append(sv)
-            # note: symlinks is already forced to False
-            patch_exporter.prev_patch = PatchVersion._create(patch.storage, patch.version, prev_solutions)
+            # PatcherReleaseElement elements are assumed
+            storage = self.storage_for_version('pbe')
+            assert storage.storage_type == 'patcher'
+            last_versions = self.get_last_versions('pbe')
+            if last_versions:  # empty for first export
+                assert len(last_versions) == 1 and storage.channel in last_versions
+                prev_release = PatcherRelease(storage, last_versions[storage.channel])
+                prev_patch_elements = [PatcherPatchElement(elem) for elem in prev_release.elements()]
+                # note: symlinks is already forced to False
+                patch_exporter.prev_patch = Patch._create(prev_patch_elements)
         patch_exporter.process(overwrite=True)
 
         # update the "latest" link if it exists (atomically)
-        if self.cdn == 'default':
+        if not is_pbe:
             link_path = os.path.join(self.export, 'latest')
             target = str(patch.version)
             if os.path.islink(link_path) and os.readlink(link_path) != target:
@@ -198,102 +331,99 @@ class Updater:
         logger.debug(f"update exported patch for new hashes: {exporter.patch.version}")
         exporter.process(overwrite=False)
 
-    @classmethod
-    def update_exports_for_new_hashes(cls, base, new_hashes, first=None, pbe=True):
+    def update_exports_for_new_hashes(self, new_hashes, pbe=True):
         """Update all exports for new hashes"""
 
-        updater = cls(base, 'default')
-        exporters = CdragonRawPatchExporter.from_directory(updater.storage, updater.export, first=first)
-        for exporter in exporters:
-            updater.export_if_new_hashes(exporter, new_hashes)
+        if not new_hashes:
+            return
+
+        for version in self.exported_versions():
+            exporter = self.patch_exporter_from_version(version)
+            self.export_if_new_hashes(exporter, new_hashes)
 
         if pbe:
             # allow to exclude PBE, to avoid updating for new hashes just before the full update
-            updater = cls(base, 'pbe')
-            if os.path.exists(updater.export):
-                patch = PatchVersion.version(updater.storage, 'main')
-                exporter = updater.patch_exporter_from_patch(patch)
-                updater.export_if_new_hashes(exporter, new_hashes)
+            exporter = self.patch_exporter_from_version('main')
+            self.export_if_new_hashes(exporter, new_hashes)
 
-    @classmethod
-    def update_exports(cls, base, patches, first=None, overwrite=False):
+    def update_exports(self, versions, overwrite=False):
         """Update exports, forcily"""
 
-        all_exporters = []  # exporter
-
-        updater = cls(base, 'default')
-        exporters = CdragonRawPatchExporter.from_directory(updater.storage, updater.export, first=first)
-        for exporter in exporters[:-1]:
-            all_exporters.append(exporter)
-        all_exporters.append(exporters[-1])
-
-        updater = cls(base, 'pbe')
-        if os.path.exists(updater.export):
-            patch = PatchVersion.version(updater.storage, 'main')
-            exporter = updater.patch_exporter_from_patch(patch)
-            all_exporters.append(exporter)
-
-        if patches is None:
+        if versions is None:
             # export everything
-            for exporter in all_exporters:
-                exporter.process(overwrite)
-        else:
-            # index by version string
-            exporters_by_version = {e.patch.version: e for e in all_exporters}
-            # check requested versions before starting the process
-            missing_versions = set(patches) - set(exporters_by_version)
-            if missing_versions:
-                raise ValueError(f"versions not found: {', '.join(sorted(missing_versions))}")
-            for version in patches:
-                exporters_by_version[version].process(overwrite=overwrite)
+            versions = self.exported_versions()
+            if self.storage_path_pbe is not None:
+                versions.append('main')
+
+        for version in versions:
+            exporter = self.patch_exporter_from_version(version)
+            exporter.process(overwrite=overwrite)
 
     def patch_exporter_from_patch(self, patch):
         """Return a PatchExporter for a given patch"""
 
-        if self.cdn == 'pbe':
+        if patch.version == 'main':
             basename = 'pbe'
             previous_patch = None
             symlinks = False
         else:
             basename = str(patch.version)
-            # retrieve previous patch version
-            it = PatchVersion.versions(self.storage, stored=True)
-            for v in it:
-                if v.version == patch.version:
-                    previous_patch = next(it)
-                    break
+            # retrieve previous patch version, if needed
+            if patch.version == self.first_version():
+                previous_patch = None
             else:
-                raise ValueError(f"cannot guess previous patch for {patch}")
+                storage = self.storage_for_version(patch.version)
+                it = storage.patches(stored=True)
+                for v in it:
+                    if v.version == patch.version:
+                        previous_patch = next(it)
+                        break
+                else:
+                    raise ValueError(f"cannot guess previous patch for {patch}")
             symlinks = None
         return CdragonRawPatchExporter(os.path.join(self.export, basename), patch, previous_patch, symlinks)
 
-    def clean_storage_files(self, patch):
+    def patch_exporter_from_version(self, version):
+        """Return a PatchExporter for a given version (or `main`)"""
+
+        storage = self.storage_for_version(version)
+        patch = storage.patch(version, stored=True)
+        return self.patch_exporter_from_patch(patch)
+
+    def clean_pbe_files(self):
         """Keep only the latest version of files"""
 
-        if self.cdn != 'pbe':
-            return  # only clean PBE
+        storage = self.storage_for_version('main')
+        patch = storage.patch()
 
-        solutions = [sv for sv in patch.solutions(latest=True)]
+        logger.info("clean PBE files")
 
-        # normalize paths to avoid / vs. \ mix on Windows
-        storage_root = os.path.normpath(self.storage.path)
-        kept_files = {os.path.join(storage_root, os.path.normpath(p)) for sv in solutions for p in sv.filepaths(True)}
+        # assume all elements are based on the same release
+        release = patch.elements[0].elem.release
 
-        # remove all files not from the latest patch
-        # note that it will also remove solution files too
-        dirs_to_remove = set()
-        for root, dirs, files in os.walk(storage_root):
-            for name in files:
-                path = os.path.join(root, name)
-                if path not in kept_files:
-                    logger.debug(f"remove old file: {path}")
-                    os.remove(path)
-                    dirs_to_remove.add(root)
-        for path in dirs_to_remove:
-            try:
-                os.removedirs(path)
-            except OSError:
-                pass
+        # remove extra manifests
+        paths_to_keep = [os.path.basename(e.manif_url) for e in release.elements()]
+        dir_path = storage.fspath("channels/public/releases")
+        for p in os.listdir(dir_path):
+            if p not in paths_to_keep:
+                logger.debug(f"clean manifest {p}")
+                os.remove(os.path.join(dir_path, p))
+
+        # remove extra bundles
+        paths_to_keep = {f"{i:016X}.bundle" for i in set.union(*(e.bundle_ids(langs=True) for e in release.elements()))}
+        dir_path = storage.fspath("channels/public/bundles")
+        for p in os.listdir(dir_path):
+            if p not in paths_to_keep:
+                logger.debug(f"clean bundle {p}")
+                os.remove(os.path.join(dir_path, p))
+
+        # remove extracted files
+        release_dir = storage.fspath(release.storage_dir)
+        dir_path = os.path.dirname(release_dir)
+        for p in os.listdir(dir_path):
+            if p != os.path.basename(release_dir):
+                logger.debug(f"clean extracted files for version {p}")
+                shutil.rmtree(os.path.join(dir_path, p))
 
 
 def get_cdtb_repo():
@@ -353,77 +483,61 @@ def git_pull_hashes():
 
 
 def command_new_patch(parser, args):
-    updater = Updater(args.basedir, args.cdn)
-    patch = updater.get_new_patch()
+    updater = args.updater
+    patch = updater.get_new_patch(args.branch)
     if not patch:
         return  # nothing to update
 
     new_hashes = updater.fetch_patch(patch)
-    updater.update_exports_for_new_hashes(args.basedir, new_hashes, first=args.first, pbe=updater.cdn != 'pbe')
+    updater.update_exports_for_new_hashes(new_hashes, pbe=args.branch != 'pbe')
     updater.export_new_patch(patch)
 
     # commit changes to hashes.txt
     if new_hashes:
-        if args.cdn == 'pbe':
+        if args.branch == 'pbe':
             git_commit_hashes("Update hashes (PBE update)")
         else:
             git_commit_hashes(f"Update hashes ({patch.version})")
 
-    updater.clean_storage_files(patch)
-    updater.save_last_versions(patch)
-
-    if args.webhook:
-        if args.cdn == 'pbe':
-            str_patch = "new PBE version"
-        else:
-            str_patch = f"new patch ({patch.version})"
-        discord_notify(args.webhook, f"raw.communitydragon.org has been updated with {str_patch}")
+    if args.branch == 'pbe':
+        updater.clean_pbe_files()
+    updater.save_last_versions(args.branch, patch)
 
 
 def command_update(parser, args):
     if args.patches:
-        patches = ['main' if p == 'pbe' else p for p in args.patches]
+        versions = ['main' if p == 'pbe' else p for p in args.patches]
     else:
-        patches = None
+        versions = None
 
-    Updater.update_exports(args.basedir, patches, first=args.first, overwrite=args.force)
+    updater = args.updater
+    updater.update_exports([PatchVersion(v) for v in versions], overwrite=args.force)
 
 
 def command_git_update(parser, args):
     new_hashes = git_pull_hashes()
     if not new_hashes:
         return
-    Updater.update_exports_for_new_hashes(args.basedir, new_hashes, first=args.first)
 
-    if args.webhook:
-        if len(new_hashes) == 1:
-            str_hashes = "1 new hash"
-        else:
-            str_hashes = f"{len(new_hashes)} new hashes"
-        discord_notify(args.webhook, f"raw.communitydragon.org has been updated with {str_hashes}")
+    args.updater.update_exports_for_new_hashes(new_hashes)
 
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
-    default_discord_webhook = os.environ.get('CDRAGON_RAW_UPDATE_WEBHOOK')
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help="be verbose")
-    parser.add_argument('-b', '--basedir', metavar='DIR',
-                        help="base directory for all files (storage, export, ...)")
-    parser.add_argument('--first', metavar='PATCH', type=Version,
-                        help="first patch version to export")
-    parser.add_argument('--webhook', default=default_discord_webhook, metavar='URL',
-                        help="Discord webhook URL for update notifications")
+    parser.add_argument('-c', '--conf',
+                        help="path to update configuration file")
 
     subparsers = parser.add_subparsers(dest='command', help="command")
 
     subparser = subparsers.add_parser('new-patch',
                                       help="check for new patch and export it")
-    subparser.add_argument('--cdn', choices=['default', 'pbe'], default='default',
-                           help="use a different CDN")
+    subparser.add_argument('branch', choices=['live', 'pbe'], default='live',
+                           help="check for a new patch for the given branch")
 
     subparser = subparsers.add_parser('update',
                                       help="update given exports, for instance for new hashes")
@@ -431,9 +545,6 @@ def main():
                            help="Forcily overwrite files")
     subparser.add_argument('patches', nargs='*',
                            help="patches to export, none to update all, 'pbe' for PBE")
-
-    subparser = subparsers.add_parser('git-update',
-                                      help="update Git repository, update exports on new hashes")
 
     args = parser.parse_args()
 
@@ -457,7 +568,8 @@ def main():
         logger.setLevel(logging.INFO)
         cdragontoolbox.logger.setLevel(logging.INFO)
 
-    with filelock.FileLock(os.path.join(args.basedir, "update.lock")):
+    args.updater = Updater(args.conf)
+    with args.updater.lock():
         globals()[f"command_{args.command.replace('-', '_')}"](parser, args)
 
 
