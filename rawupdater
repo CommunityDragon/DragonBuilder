@@ -499,9 +499,9 @@ def command_new_patch(parser, args):
         else:
             git_commit_hashes(f"Update hashes ({patch.version})")
 
+    updater.save_last_versions(args.branch, patch)
     if args.branch == 'pbe':
         updater.clean_pbe_files()
-    updater.save_last_versions(args.branch, patch)
 
 
 def command_update(parser, args):
