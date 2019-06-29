@@ -507,11 +507,12 @@ def command_new_patch(parser, args):
 def command_update(parser, args):
     if args.patches:
         versions = ['main' if p == 'pbe' else p for p in args.patches]
+        versions = [PatchVersion(v) for v in versions]
     else:
         versions = None
 
     updater = args.updater
-    updater.update_exports([PatchVersion(v) for v in versions], overwrite=args.force)
+    updater.update_exports(versions, overwrite=args.force)
 
 
 def command_git_update(parser, args):
