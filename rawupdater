@@ -390,16 +390,15 @@ class Updater:
         patch = storage.patch(version, stored=True)
         return self.patch_exporter_from_patch(patch)
 
-    def clean_pbe_files(self):
+    def clean_pbe_files(self, kept_patch):
         """Keep only the latest version of files"""
 
         storage = self.storage_for_version('main')
-        patch = storage.patch()
 
         logger.info("clean PBE files")
 
         # assume all elements are based on the same release
-        release = patch.elements[0].elem.release
+        release = kept_patch.elements[0].elem.release
 
         # remove extra manifests
         paths_to_keep = [os.path.basename(e.manif_url) for e in release.elements()]
@@ -501,7 +500,9 @@ def command_new_patch(parser, args):
 
     updater.save_last_versions(args.branch, patch)
     if args.branch == 'pbe':
-        updater.clean_pbe_files()
+        # Note: don't use storage.patch() to not clean the patch just extracted
+        # if a new one has been made available since the beginning of the extract
+        updater.clean_pbe_files(patch)
 
 
 def command_update(parser, args):
