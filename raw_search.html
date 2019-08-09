@@ -125,7 +125,7 @@
     function updateSearch(pattern) {
       var re;
       try {
-        re = RegExp(`^.*${pattern}.*$`, 'mg');
+        re = RegExp(`^.*${pattern}.*$`, 'mig');
       } catch (e) {
         return false;
       }
