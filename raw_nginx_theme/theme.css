@@ -1,0 +1,74 @@
+body {
+  background-color: #eaeaea;
+}
+
+pre {
+  display: block;
+  padding: 0 10px;
+  font-size: 1em;
+  font-family: sans-serif;
+  text-align: right;
+}
+
+* {
+  font-family: sans-serif;
+}
+
+pre a {
+  text-align: left;
+  float: left;
+}
+
+.container a {
+  color: #007bff;
+  text-decoration: none;
+  background-color: transparent;
+}
+
+.container a:hover {
+  color: #0056b3;
+  text-decoration: underline;
+}
+
+.container #list {
+  border: none;
+  width: 100%;
+}
+
+.container th, .container tr {
+  background: transparent;
+}
+
+.container th {
+  text-align: left;
+  font-weight: bold;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+.container th, .container td {
+  padding: 0.1em 0.5em;
+}
+
+@media (max-width: 992px) {
+  #list colgroup > col:nth-child(4) { display: none; }
+  #list tr > td:nth-child(4) { display: none; }
+  #list tr > th:nth-child(4) { display: none; }
+  #list tr > td:nth-child(2) { width: 80%; }
+  #list tr > td:nth-child(3) { width: 20%; }
+}
+
+@media (max-width: 768px) {
+  #list colgroup > col:nth-child(3) { display: none; }
+  #list tr > td:nth-child(3) { display: none; }
+  #list tr > th:nth-child(3) { display: none; }
+  #list tr > td:nth-child(2) { width: 100%; }
+}
+
+@media (prefers-color-scheme: dark) {
+  html { color: white; }
+  body { color: white; background-color: #222; }
+  .card { background-color: #303030; }
+  .container a:hover { color: #3399ff; }
+  .bg-dark { background-color: #303030 !important; }
+}
+
