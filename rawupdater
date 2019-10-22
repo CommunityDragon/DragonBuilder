@@ -280,6 +280,7 @@ class Updater:
                 guesser.grep_wad(wad)
             guesser.substitute_numbers()
             guesser.substitute_extensions()
+            guesser.check_basename_prefixes()
 
             nfound = nunknown - len(guesser.unknown)
             logger.info(f"new game hashes found: {nfound}")
@@ -577,4 +578,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
