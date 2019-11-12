@@ -103,9 +103,9 @@ class Updater:
                     self.storage_path_live = path
         self._storages = {}  # {"pbe"|"live"|PatchVersion: Storage}
 
-    def lock(self):
+    def lock(self, timeout=-1):
         """Acquire lock to avoid parallel changes"""
-        return filelock.FileLock(os.path.join(self.base, "update.lock"))
+        return filelock.FileLock(os.path.join(self.base, "update.lock"), timeout=timeout)
 
     def storage_for_version(self, version: PatchVersion) -> Optional[Storage]:
         """Return a storage for a given version, if available"""
@@ -532,7 +532,7 @@ def main():
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help="be verbose")
-    parser.add_argument('-c', '--conf',
+    parser.add_argument('-c', '--conf', required=True,
                         help="path to update configuration file")
 
     subparsers = parser.add_subparsers(dest='command', help="command")
@@ -572,8 +572,11 @@ def main():
         cdragontoolbox.logger.setLevel(logging.INFO)
 
     args.updater = Updater(args.conf)
-    with args.updater.lock():
-        globals()[f"command_{args.command.replace('-', '_')}"](parser, args)
+    try:
+        with args.updater.lock(0) as lock:
+            globals()[f"command_{args.command.replace('-', '_')}"](parser, args)
+    except TimeoutError:
+        pass  # ignore
 
 
 if __name__ == '__main__':
