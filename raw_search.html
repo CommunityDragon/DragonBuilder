@@ -78,7 +78,7 @@
     function updateSearch(pattern) {
       var re;
       try {
-        re = RegExp(`^.*${pattern}.*$`, 'mig');
+        re = RegExp(`^.*(?:${pattern}).*$`, 'mig');
       } catch (e) {
         return false;
       }
