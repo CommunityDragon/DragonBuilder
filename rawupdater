@@ -212,7 +212,7 @@ class Updater:
             releases = [e2.release for e in patch.elements for e2 in e.elements]
         else:
             raise TypeError(f"unsupported storage type: {storage.storage_type}")
-        return {r.storage.channel: r.version for r in releases}
+        return {r.storage.patchline: r.version for r in releases}
 
     def get_new_patch(self, branch):
         """Check if a new patch is available and return it"""
@@ -303,8 +303,8 @@ class Updater:
             assert storage.storage_type == 'patcher'
             last_versions = self.get_last_versions('pbe')
             if last_versions:  # empty for first export
-                assert len(last_versions) == 1 and storage.channel in last_versions
-                prev_release = PatcherRelease(storage, last_versions[storage.channel])
+                assert len(last_versions) == 1 and storage.patchline in last_versions
+                prev_release = PatcherRelease(storage, last_versions[storage.patchline])
                 prev_patch_elements = [PatcherPatchElement(elem) for elem in prev_release.elements()]
                 # note: symlinks is already forced to False
                 patch_exporter.prev_patch = Patch._create(prev_patch_elements)
@@ -421,9 +421,12 @@ class Updater:
         release_dir = storage.fspath(release.storage_dir)
         dir_path = os.path.dirname(release_dir)
         for p in os.listdir(dir_path):
+            full_path = os.path.join(dir_path, p)
+            if not os.path.isdir(full_path):
+                continue  # don't clean files, only directories
             if p != os.path.basename(release_dir):
                 logger.debug(f"clean extracted files for version {p}")
-                shutil.rmtree(os.path.join(dir_path, p))
+                shutil.rmtree(full_path)
 
 
 def get_cdtb_repo():
