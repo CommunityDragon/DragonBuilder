@@ -323,7 +323,7 @@ class Updater:
     def export_if_new_hashes(self, exporter, new_hashes):
         """Update an export if new hashes are available"""
 
-        unknown_path = exporter.output + ".unknown.txt"
+        unknown_path = os.path.join(exporter.output, "cdragon/files.unknown.txt")
         if os.path.isfile(unknown_path):
             with open(unknown_path) as f:
                 unknown = {int(h, 16) for h in f}
