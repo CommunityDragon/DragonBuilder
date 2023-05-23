@@ -174,8 +174,8 @@ class Updater:
 
         return sorted(versions)
 
-    def first_version(self):
-        return min(v0 for v0, _, _ in self.storage_paths)
+    def is_full_export_version(self, version):
+        return any(version == v0 for v0, _, _ in self.storage_paths)
 
     def last_versions_path(self, branch):
         return os.path.join(self.base, f"last-versions.{branch}.txt")
@@ -370,7 +370,7 @@ class Updater:
         else:
             basename = str(patch.version)
             # retrieve previous patch version, if needed
-            if patch.version == self.first_version():
+            if self.is_full_export_version(patch.version):
                 previous_patch = None
             else:
                 storage = self.storage_for_version(patch.version)
