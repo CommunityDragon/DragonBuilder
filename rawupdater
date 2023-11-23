@@ -40,6 +40,7 @@ from typing import Optional
 import git
 import requests
 import filelock
+import subprocess
 import cdragontoolbox
 from cdragontoolbox.storage import (
     Storage,
@@ -433,20 +434,32 @@ class Updater:
                 shutil.rmtree(full_path)
 
 
-def get_cdtb_repo():
-    """Return a git.Repo for cdtb"""
-    repo_dir = os.path.dirname(os.path.dirname(os.path.realpath(cdragontoolbox.__file__)))
-    return git.Repo(repo_dir)
+def get_data_repo():
+    """Return a git.Repo for Data, or None"""
+
+    if 'CDRAGON_DATA' not in os.environ:
+        return None
+    return git.Repo(os.environ['CDRAGON_DATA'])
 
 def git_commit_hashes(message):
     """Commit hashes changes"""
 
-    repo = get_cdtb_repo()
-    if repo.index.diff(repo.head.commit):
-        logging.warning("cdtb repo index is not clean, won't commit hashes")
+    repo = get_data_repo()
+    if repo is None:
+        logging.warning("Data repo not found, won't commit hashes")
         return
-    repo.index.add(['cdragontoolbox/hashes.lcu.txt'])
-    repo.index.add(['cdragontoolbox/hashes.game.txt'])
+    if repo.index.diff(repo.head.commit):
+        logging.warning("Data repo index is not clean, won't commit hashes")
+        return
+
+    data_dir = repo.working_tree_dir
+    try:
+        subprocess.check_call([os.path.join(data_dir, "tools/hashes-prepare")])
+    except subprocess.CalledProcessError:
+        logging.warning("failed to split hashes from Data repo, won't commit hashes")
+        return
+
+    repo.git.add('-u', 'hashes/lol/hashes.lcu.txt*', 'hashes/lol/hashes.game.txt*')
     if not repo.index.diff(repo.head.commit):
         return  # no changes
 
