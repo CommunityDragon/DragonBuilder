@@ -452,42 +452,6 @@ def git_commit_hashes(message):
 
     repo.index.commit(message)
 
-def git_pull_hashes():
-    """Update Git repository, check for hashes updates
-
-    Return a set of new hashes.
-    """
-
-    logger.info("pull hashes update")
-    repo = get_cdtb_repo()
-    master = repo.active_branch
-    if master.name != 'master':
-        raise RuntimeError("local HEAD is not on 'master'")
-
-    # fetch remote, check if there have ben new commits
-    origin = repo.remote('origin')
-    origin.fetch('master')
-    tip_local = master.commit
-    tip_remote = repo.rev_parse('origin/master')
-    if tip_local == tip_remote:
-        return set()  # no changes
-
-    if not repo.is_ancestor(tip_local, tip_remote):
-        raise RuntimeError("local HEAD (master) is not an ancestor of origin branch")
-
-    # get new hashes, if any
-    diff_index = tip_local.diff(tip_remote, paths=['cdragontoolbox/hashes.lcu.txt', 'cdragontoolbox/hashes.game.txt'])
-    new_hashes = set()
-    for diff in diff_index:
-        hashes_old = {int(h.split()[0], 16) for h in diff.a_blob.data_stream.read().splitlines()}
-        hashes_new = {int(h.split()[0], 16) for h in diff.b_blob.data_stream.read().splitlines()}
-        new_hashes |= hashes_new - hashes_old
-
-    # update local HEAD, use pull() to detect any error
-    origin.pull('master', ff_only=True)
-
-    return new_hashes
-
 
 def command_new_patch(parser, args):
     updater = args.updater
@@ -522,14 +486,6 @@ def command_update(parser, args):
 
     updater = args.updater
     updater.update_exports(versions, overwrite=args.force)
-
-
-def command_git_update(parser, args):
-    new_hashes = git_pull_hashes()
-    if not new_hashes:
-        return
-
-    args.updater.update_exports_for_new_hashes(new_hashes)
 
 
 def main():
