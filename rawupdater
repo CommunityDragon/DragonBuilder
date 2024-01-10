@@ -265,6 +265,7 @@ class Updater:
                 guesser.grep_wad(wad)
             guesser.substitute_numbers()
             guesser.substitute_extensions()
+            guesser.substitute_plugin()
 
             nfound = nunknown - len(guesser.unknown)
             logger.info(f"new LCU hashes found: {nfound}")
@@ -281,6 +282,9 @@ class Updater:
             guesser.substitute_numbers()
             guesser.substitute_extensions()
             guesser.check_basename_prefixes()
+            guesser.substitute_lang()
+            guesser.guess_characters_files()
+            guesser.guess_shader_variants()
 
             nfound = nunknown - len(guesser.unknown)
             logger.info(f"new game hashes found: {nfound}")
