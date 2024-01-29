@@ -40,23 +40,23 @@ from typing import Optional
 import requests
 import filelock
 import subprocess
-import cdragontoolbox
-from cdragontoolbox.storage import (
+import cdtb
+from cdtb.storage import (
     Storage,
     Patch,
     PatchVersion,
 )
-from cdragontoolbox.patcher import (
+from cdtb.patcher import (
     PatcherPatchElement,
     PatcherRelease,
 )
-from cdragontoolbox.wad import (
+from cdtb.wad import (
     Wad,
 )
-from cdragontoolbox.export import (
+from cdtb.export import (
     CdragonRawPatchExporter,
 )
-from cdragontoolbox.hashes import (
+from cdtb.hashes import (
     hashfile_lcu,
     hashfile_game,
     LcuHashGuesser,
@@ -502,10 +502,10 @@ def main():
 
     if args.verbose >= 2:
         logger.setLevel(logging.DEBUG)
-        cdragontoolbox.logger.setLevel(logging.DEBUG)
+        cdtb.logger.setLevel(logging.DEBUG)
     elif args.verbose >= 1:
         logger.setLevel(logging.INFO)
-        cdragontoolbox.logger.setLevel(logging.INFO)
+        cdtb.logger.setLevel(logging.INFO)
 
     args.updater = Updater(args.conf)
     try:
