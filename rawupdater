@@ -512,7 +512,7 @@ def main():
         with args.updater.lock(0) as lock:
             globals()[f"command_{args.command.replace('-', '_')}"](parser, args)
     except TimeoutError:
-        pass  # ignore
+        logger.info("failed to acquire lock; skipping update")
 
 
 if __name__ == '__main__':
