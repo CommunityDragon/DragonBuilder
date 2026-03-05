@@ -105,7 +105,7 @@ class Updater:
 
     def lock(self, timeout=-1):
         """Acquire lock to avoid parallel changes"""
-        return filelock.FileLock(os.path.join(self.base, "update.lock"), timeout=timeout)
+        return filelock.FileLock(os.path.join(self.base, "update.lock"), timeout=timeout, mode=0o664)
 
     def storage_for_version(self, version: PatchVersion) -> Optional[Storage]:
         """Return a storage for a given version, if available"""
